@@ -32,7 +32,7 @@
 ### Các bước thực hiện
 1. **Tải mã nguồn:**
    ```bash
-   git clone [https://github.com/conchocon154/swift-chess-pro.git](https://github.com/conchocon154/swift-chess-pro.git)
+   git clone https://github.com/conchocon154/Chess_Ai
    ```
 2. **Mở dự án:**
 
