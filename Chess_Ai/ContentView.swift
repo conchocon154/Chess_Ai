@@ -19,7 +19,7 @@ struct ChessPiece: Equatable {
         case (.black, .king): return "♚"; case (.black, .queen): return "♛"
         case (.black, .rook): return "♜"; case (.black, .bishop): return "♝"
         case (.black, .knight): return "♞"; case (.black, .pawn): return "♟"
-        }
+        } 
     }
 }
 
