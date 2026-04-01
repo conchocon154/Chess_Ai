@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 
-// MARK: - MODELS
+// MARK: - ENUMS & MODELS
 enum GameMode { case menu, playing }
 enum Difficulty { case easy, medium, hard }
 enum PieceColor { case white, black }
@@ -21,6 +21,12 @@ struct ChessPiece: Equatable {
         case (.black, .knight): return "♞"; case (.black, .pawn): return "♟"
         }
     }
+    var value: Int {
+        switch type {
+        case .pawn: return 10; case .knight: return 30; case .bishop: return 30
+        case .rook: return 50; case .queen: return 90; case .king: return 9000
+        }
+    }
 }
 
 struct Square: Equatable {
@@ -36,7 +42,7 @@ struct MoveHistory {
     let movedPiece: ChessPiece; let capturedPiece: ChessPiece?; let notation: String
 }
 
-// MARK: - ENGINE (BỘ NÃO)
+// MARK: - CHESS ENGINE
 class ChessEngine: ObservableObject {
     @Published var board: [[Square]] = []
     @Published var selectedSquare: Square? = nil
@@ -65,50 +71,67 @@ class ChessEngine: ObservableObject {
             newBoard[6][c].piece = ChessPiece(type: .pawn, color: .white)
             newBoard[7][c].piece = ChessPiece(type: backRank[c], color: .white)
         }
-        board = newBoard; isWhiteTurn = true; moveLog = []; history = []; gameState = .playing; isAITurn = false; selectedSquare = nil
+        self.board = newBoard; isWhiteTurn = true; moveLog = []; history = []; gameState = .playing; isAITurn = false; selectedSquare = nil
     }
 
-    func isPseudoLegal(p: ChessPiece, from: Square, to: Square) -> Bool {
+    // --- HÀM KIỂM TRA CHIẾU TƯỚNG (GIẢI QUYẾT LỖI SCOPE) ---
+    func isKingInCheck(color: PieceColor, on b: [[Square]]) -> Bool {
+        var kPos: (Int, Int)?
+        for r in 0..<8 { for c in 0..<8 {
+            if let p = b[r][c].piece, p.type == .king, p.color == color { kPos = (r,c) }
+        }}
+        guard let kp = kPos else { return false }
+        let enemy: PieceColor = color == .white ? .black : .white
+        for r in 0..<8 { for c in 0..<8 {
+            if let p = b[r][c].piece, p.color == enemy, isPseudoLegal(p: p, from: b[r][c], to: b[kp.0][kp.1], on: b) { return true }
+        }}
+        return false
+    }
+
+    func isPseudoLegal(p: ChessPiece, from: Square, to: Square, on b: [[Square]]) -> Bool {
         if from.row == to.row && from.column == to.column { return false }
         if let target = to.piece, target.color == p.color { return false }
         let rd = to.row - from.row; let cd = to.column - from.column
+        
         switch p.type {
         case .pawn:
             let dir = p.color == .white ? -1 : 1
-            let startRow = p.color == .white ? 6 : 1
             if cd == 0 && rd == dir && to.piece == nil { return true }
-            if cd == 0 && rd == dir*2 && from.row == startRow && to.piece == nil {
-                return board[from.row + dir][from.column].piece == nil
+            if cd == 0 && rd == dir*2 && from.row == (p.color == .white ? 6 : 1) && to.piece == nil {
+                return b[from.row + dir][from.column].piece == nil
             }
             if abs(cd) == 1 && rd == dir && to.piece != nil { return true }
             return false
         case .knight: return (abs(rd) == 2 && abs(cd) == 1) || (abs(rd) == 1 && abs(cd) == 2)
         case .king: return abs(rd) <= 1 && abs(cd) <= 1
-        case .rook: return (rd == 0 || cd == 0) && isPathClear(from: from, to: to)
-        case .bishop: return abs(rd) == abs(cd) && isPathClear(from: from, to: to)
-        case .queen: return (rd == 0 || cd == 0 || abs(rd) == abs(cd)) && isPathClear(from: from, to: to)
+        case .rook: return (rd == 0 || cd == 0) && isPathClear(from: from, to: to, on: b)
+        case .bishop: return abs(rd) == abs(cd) && isPathClear(from: from, to: to, on: b)
+        case .queen: return (rd == 0 || cd == 0 || abs(rd) == abs(cd)) && isPathClear(from: from, to: to, on: b)
         }
     }
 
-    func isPathClear(from start: Square, to end: Square) -> Bool {
+    func isPathClear(from start: Square, to end: Square, on b: [[Square]]) -> Bool {
         let rStep = end.row > start.row ? 1 : (end.row < start.row ? -1 : 0)
         let cStep = end.column > start.column ? 1 : (end.column < start.column ? -1 : 0)
         var cr = start.row + rStep; var cc = start.column + cStep
         while cr != end.row || cc != end.column {
-            if board[cr][cc].piece != nil { return false }; cr += rStep; cc += cStep
+            if b[cr][cc].piece != nil { return false }; cr += rStep; cc += cStep
         }
         return true
     }
 
     func handleTap(row: Int, col: Int) {
-        if isAITurn || gameState != .playing { return }
+        if isAITurn || promotionSquare != nil || gameState.isGameOver { return }
         let tapped = board[row][col]
         if let sel = selectedSquare {
-            if isPseudoLegal(p: sel.piece!, from: sel, to: tapped) {
-                executeMove(from: sel, to: tapped)
-            } else {
-                selectedSquare = tapped.piece?.color == (isWhiteTurn ? .white : .black) ? tapped : nil
+            if isPseudoLegal(p: sel.piece!, from: sel, to: tapped, on: board) {
+                var sim = board
+                sim[row][col].piece = sel.piece; sim[sel.row][sel.column].piece = nil
+                if !isKingInCheck(color: sel.piece!.color, on: sim) {
+                    executeMove(from: sel, to: tapped); return
+                }
             }
+            selectedSquare = (tapped.piece?.color == (isWhiteTurn ? .white : .black)) ? tapped : nil
         } else if tapped.piece?.color == (isWhiteTurn ? .white : .black) {
             selectedSquare = tapped
         }
@@ -121,6 +144,9 @@ class ChessEngine: ObservableObject {
         moveLog.insert(note, at: 0)
         board[to.row][to.column].piece = piece
         board[from.row][from.column].piece = nil
+        if piece.type == .pawn && (to.row == 0 || to.row == 7) {
+            promotionSquare = board[to.row][to.column]; return
+        }
         finalizeTurn()
     }
 
@@ -132,15 +158,41 @@ class ChessEngine: ObservableObject {
             if !moveLog.isEmpty { moveLog.removeFirst() }
             isWhiteTurn.toggle()
         }
-        isAITurn = false; selectedSquare = nil
+        gameState = .playing; isAITurn = false; selectedSquare = nil
     }
 
     func finalizeTurn() {
         isWhiteTurn.toggle(); selectedSquare = nil
-        if playAgainstAI && !isWhiteTurn {
+        let current = isWhiteTurn ? PieceColor.white : .black
+        let inCheck = isKingInCheck(color: current, on: board)
+        
+        // KIỂM TRA CHIẾU BÍ
+        let legalMoves = getAllLegalMoves(for: current)
+        if legalMoves.isEmpty {
+            gameState = inCheck ? (isWhiteTurn ? .checkmateBlackWins : .checkmateWhiteWins) : .stalemate
+        } else {
+            gameState = inCheck ? (isWhiteTurn ? .checkWhite : .checkBlack) : .playing
+        }
+        
+        if !gameState.isGameOver && playAgainstAI && !isWhiteTurn {
             isAITurn = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.makeAIMove() }
         }
+    }
+
+    func getAllLegalMoves(for color: PieceColor) -> [Any] {
+        var moves: [Any] = []
+        for r in 0..<8 { for c in 0..<8 {
+            if let p = board[r][c].piece, p.color == color {
+                for tr in 0..<8 { for tc in 0..<8 {
+                    if isPseudoLegal(p: p, from: board[r][c], to: board[tr][tc], on: board) {
+                        var sim = board; sim[tr][tc].piece = p; sim[r][c].piece = nil
+                        if !isKingInCheck(color: color, on: sim) { moves.append(0) }
+                    }
+                }}
+            }
+        }}
+        return moves
     }
 
     func makeAIMove() {
@@ -148,132 +200,101 @@ class ChessEngine: ObservableObject {
         for r in 0..<8 { for c in 0..<8 {
             if let p = board[r][c].piece, p.color == .black {
                 for tr in 0..<8 { for tc in 0..<8 {
-                    if isPseudoLegal(p: p, from: board[r][c], to: board[tr][tc]) {
-                        moves.append((board[r][c], board[tr][tc]))
+                    if isPseudoLegal(p: p, from: board[r][c], to: board[tr][tc], on: board) {
+                        var sim = board; sim[tr][tc].piece = p; sim[r][c].piece = nil
+                        if !isKingInCheck(color: .black, on: sim) { moves.append((board[r][c], board[tr][tc])) }
                     }
-                } }
+                }}
             }
-        } }
+        }}
         if let m = moves.randomElement() { executeMove(from: m.0, to: m.1) }
         isAITurn = false
     }
 }
 
-// MARK: - UI COMPONENTS
+// MARK: - EXTENSIONS
+extension GameState {
+    var isGameOver: Bool {
+        return self == .checkmateWhiteWins || self == .checkmateBlackWins || self == .stalemate
+    }
+}
+
+// MARK: - VIEW (GIAO DIỆN)
 struct ContentView: View {
     @StateObject var game = ChessEngine()
     @State private var mode: GameMode = .menu
-    @State private var showAIDifficulty = false
+    @State private var showAIDiff: Bool = false
     
     let letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
-    let lightSquare = Color(red: 0.93, green: 0.93, blue: 0.82)
-    let darkSquare = Color(red: 0.46, green: 0.59, blue: 0.34)
-
+    
     var body: some View {
         ZStack {
             Color(red: 0.1, green: 0.1, blue: 0.12).edgesIgnoringSafeArea(.all)
-
+            
             if mode == .menu {
-                VStack(spacing: 40) {
+                VStack(spacing: 30) {
                     Text("CỜ VUA SWIFT").font(.system(size: 60, weight: .black)).foregroundColor(.white)
-                    
-                    if !showAIDifficulty {
-                        VStack(spacing: 20) {
-                            Button("🤝 Chơi 2 Người") { game.playAgainstAI = false; game.setupBoard(); mode = .playing }
-                                .buttonStyle(MenuBtn(color: .blue))
-                            
-                            Button("🤖 Chơi với Máy") { withAnimation { showAIDifficulty = true } }
-                                .buttonStyle(MenuBtn(color: .orange))
-                        }
+                    if !showAIDiff {
+                        Button("🤝 Chơi 2 Người") { game.playAgainstAI = false; game.setupBoard(); mode = .playing }
+                            .buttonStyle(MenuBtnStyle(color: .blue))
+                        Button("🤖 Chơi với Máy") { withAnimation { showAIDiff = true } }
+                            .buttonStyle(MenuBtnStyle(color: .orange))
                     } else {
                         VStack(spacing: 15) {
-                            Text("Chọn mức độ").foregroundColor(.gray).font(.headline)
-                            Button("Dễ") { startAI(diff: .easy) }.buttonStyle(MenuBtn(color: .green))
-                            Button("Trung Bình") { startAI(diff: .medium) }.buttonStyle(MenuBtn(color: .orange))
-                            Button("Khó") { startAI(diff: .hard) }.buttonStyle(MenuBtn(color: .red))
-                            Button("Quay lại") { withAnimation { showAIDifficulty = false } }.foregroundColor(.gray).padding(.top)
+                            Button("Dễ") { startAI(.easy) }.buttonStyle(MenuBtnStyle(color: .green))
+                            Button("Trung Bình") { startAI(.medium) }.buttonStyle(MenuBtnStyle(color: .orange))
+                            Button("Khó") { startAI(.hard) }.buttonStyle(MenuBtnStyle(color: .red))
+                            Button("Quay lại") { withAnimation { showAIDiff = false } }.foregroundColor(.gray)
                         }
-                        .transition(.move(edge: .trailing))
                     }
                 }
             } else {
-                // MÀN HÌNH CHƠI GAME CÓ THỂ SCALE
-                GeometryReader { geometry in
-                    let boardSize = min(geometry.size.width * 0.7, geometry.size.height * 0.8)
+                GeometryReader { geo in
+                    let boardSize = min(geo.size.width * 0.7, geo.size.height * 0.8)
                     let cellSize = boardSize / 8
                     
                     HStack(spacing: 20) {
                         Spacer()
-                        
-                        // KHỐI BÀN CỜ
                         VStack(spacing: 0) {
                             HStack {
-                                Button("⬅ Menu") { mode = .menu; showAIDifficulty = false }.foregroundColor(.red).bold()
+                                Button("⬅ Menu") { mode = .menu; showAIDiff = false }.foregroundColor(.red).bold()
                                 Spacer()
-                                Text(game.isWhiteTurn ? "Lượt Trắng" : "Lượt Đen").foregroundColor(.white).bold()
-                            }
-                            .frame(width: boardSize + 30)
-                            .padding(.bottom, 10)
-
-                            HStack(spacing: 0) {
-                                // Cột số
-                                VStack(spacing: 0) {
-                                    ForEach(0..<8) { i in
-                                        Text("\(8-i)").frame(width: 25, height: cellSize).font(.caption).foregroundColor(.gray)
-                                    }
+                                if game.gameState == .checkWhite || game.gameState == .checkBlack {
+                                    Text("⚠️ CHIẾU TƯỚNG!").foregroundColor(.red).bold()
                                 }
-                                
-                                // Bàn cờ tự scale
+                                Text(game.isWhiteTurn ? "Lượt Trắng" : "Lượt Đen").foregroundColor(.white).bold()
+                            }.frame(width: boardSize + 30).padding(.bottom, 10)
+                            
+                            HStack(spacing: 0) {
+                                VStack(spacing: 0) { ForEach(0..<8) { i in Text("\(8-i)").frame(width: 25, height: cellSize).font(.caption).foregroundColor(.gray) } }
                                 VStack(spacing: 0) {
                                     ForEach(0..<8, id: \.self) { r in
                                         HStack(spacing: 0) {
                                             ForEach(0..<8, id: \.self) { c in
                                                 ZStack {
-                                                    Rectangle()
-                                                        .fill((r + c) % 2 == 0 ? lightSquare : darkSquare)
-                                                        .frame(width: cellSize, height: cellSize)
-                                                    
-                                                    if game.selectedSquare?.row == r && game.selectedSquare?.column == c {
-                                                        Color.yellow.opacity(0.4).frame(width: cellSize, height: cellSize)
-                                                    }
-                                                    
-                                                    if let p = game.board[r][c].piece {
-                                                        Text(p.symbol)
-                                                            .font(.system(size: cellSize * 0.7))
-                                                            .foregroundColor(.black)
-                                                    }
-                                                }
-                                                .onTapGesture { game.handleTap(row: r, col: c) }
+                                                    Rectangle().fill((r+c)%2==0 ? Color(red: 0.93, green: 0.93, blue: 0.82) : Color(red: 0.46, green: 0.59, blue: 0.34)).frame(width: cellSize, height: cellSize)
+                                                    if game.selectedSquare?.row == r && game.selectedSquare?.column == c { Color.yellow.opacity(0.4).frame(width: cellSize, height: cellSize) }
+                                                    if let p = game.board[r][c].piece { Text(p.symbol).font(.system(size: cellSize * 0.7)).foregroundColor(.black) }
+                                                }.onTapGesture { game.handleTap(row: r, col: c) }
                                             }
                                         }
                                     }
-                                }
-                                .border(Color.black, width: 2)
+                                }.border(Color.black, width: 2)
                             }
-                            
-                            // Hàng chữ
                             HStack(spacing: 0) {
                                 Spacer().frame(width: 25)
-                                ForEach(letters, id: \.self) { l in
-                                    Text(l).frame(width: cellSize).font(.caption).foregroundColor(.gray)
-                                }
+                                ForEach(letters, id: \.self) { l in Text(l).frame(width: cellSize).font(.caption).foregroundColor(.gray) }
                             }
-                            
                             HStack {
-                                Button(action: { game.undoMove() }) {
-                                    Label("Undo", systemImage: "arrow.uturn.backward")
-                                }.buttonStyle(.bordered).disabled(game.isAITurn)
+                                Button("↩ Undo") { game.undoMove() }.disabled(game.isAITurn)
                                 Spacer()
-                                if game.isAITurn { Text("🤖 Suy nghĩ...").foregroundColor(.yellow) }
+                                if game.isAITurn { Text("🤖 Máy đang nghĩ...").foregroundColor(.yellow) }
                                 Spacer()
-                                Button("🔄 Reset") { game.setupBoard() }.buttonStyle(.bordered).foregroundColor(.red)
-                            }
-                            .frame(width: boardSize + 30)
-                            .padding(.top, 20)
+                                Button("🔄 Reset") { game.setupBoard() }.foregroundColor(.red)
+                            }.frame(width: boardSize + 30).padding(.top, 20)
                         }
                         
-                        // NHẬT KÝ BÊN PHẢI (Ẩn nếu màn hình quá hẹp)
-                        if geometry.size.width > 800 {
+                        if geo.size.width > 800 {
                             VStack(alignment: .leading) {
                                 Text("NHẬT KÝ").font(.headline).foregroundColor(.white)
                                 ScrollView {
@@ -282,29 +303,35 @@ struct ContentView: View {
                                             Text(log).font(.system(.body, design: .monospaced)).padding(6).frame(maxWidth: .infinity, alignment: .leading).background(Color.white.opacity(0.1)).cornerRadius(5).foregroundColor(.white)
                                         }
                                     }
-                                }
-                                .frame(width: 150, height: boardSize)
+                                }.frame(width: 150, height: boardSize)
                             }
                         }
                         Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            }
+            
+            // POPUP KẾT THÚC
+            if game.gameState.isGameOver {
+                Color.black.opacity(0.8).edgesIgnoringSafeArea(.all)
+                VStack(spacing: 20) {
+                    Text(game.gameState == .stalemate ? "HÒA CỜ!" : "CHIẾU BÍ!").font(.system(size: 40, weight: .black)).foregroundColor(.white)
+                    Text(game.gameState == .checkmateWhiteWins ? "TRẮNG THẮNG" : (game.gameState == .checkmateBlackWins ? "ĐEN THẮNG" : "Không bên nào thắng")).foregroundColor(.gray)
+                    Button("Chơi ván mới") { game.setupBoard() }.buttonStyle(.borderedProminent)
+                    Button("Quay lại Menu") { mode = .menu; game.setupBoard() }.foregroundColor(.blue)
+                }.padding(40).background(Color.white).cornerRadius(20)
             }
         }
     }
     
-    func startAI(diff: Difficulty) {
-        game.playAgainstAI = true
-        game.aiDifficulty = diff
-        game.setupBoard()
-        withAnimation { mode = .playing }
+    func startAI(_ d: Difficulty) {
+        game.playAgainstAI = true; game.aiDifficulty = d; game.setupBoard(); withAnimation { mode = .playing }
     }
 }
 
-struct MenuBtn: ButtonStyle {
+struct MenuBtnStyle: ButtonStyle {
     let color: Color
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.frame(width: 280, height: 55).background(color).foregroundColor(.white).cornerRadius(12).font(.title3.bold()).shadow(radius: 5)
+        configuration.label.frame(width: 280, height: 55).background(color).foregroundColor(.white).cornerRadius(12).font(.title3.bold())
     }
 }
