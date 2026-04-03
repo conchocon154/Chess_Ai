@@ -37,7 +37,8 @@ struct Square: Equatable {
     }
 }
 
-struct MoveHistory {
+struct MoveHistory: Identifiable {
+    let id = UUID() // 🌟 Thêm ID duy nhất cho SwiftUI
     let fromRow: Int; let fromCol: Int; let toRow: Int; let toCol: Int
     let movedPiece: ChessPiece; let capturedPiece: ChessPiece?; let notation: String
 }
@@ -54,10 +55,63 @@ class ChessEngine: ObservableObject {
     @Published var aiDifficulty: Difficulty = .medium
     @Published var isAITurn: Bool = false
     @Published var promotionSquare: Square? = nil
+    @Published var validDestinations: [(Int, Int)] = [] // 🌟 THÊM DÒNG NÀY
+    
+    // MARK: - AI HEURISTICS (BẢNG ĐIỂM VỊ TRÍ)
+        let pawnTable = [
+            [ 0,  0,  0,  0,  0,  0,  0,  0],
+            [ 5, 10, 10,-20,-20, 10, 10,  5],
+            [ 5, -5,-10,  0,  0,-10, -5,  5],
+            [ 0,  0,  0, 20, 20,  0,  0,  0],
+            [ 5,  5, 10, 25, 25, 10,  5,  5],
+            [10, 10, 20, 30, 30, 20, 10, 10],
+            [50, 50, 50, 50, 50, 50, 50, 50],
+            [ 0,  0,  0,  0,  0,  0,  0,  0]
+        ]
+        let knightTable = [
+            [-50, -40, -30, -30, -30, -30, -40, -50],
+            [-40, -20,   0,   5,   5,   0, -20, -40],
+            [-30,   5,  10,  15,  15,  10,   5, -30],
+            [-30,   0,  15,  20,  20,  15,   0, -30],
+            [-30,   5,  15,  20,  20,  15,   0, -30],
+            [-30,   0,  10,  15,  15,  10,   0, -30],
+            [-40, -20,   0,   0,   0,   0, -20, -40],
+            [-50, -40, -30, -30, -30, -30, -40, -50]
+        ]
+        let bishopTable = [
+            [-20, -10, -10, -10, -10, -10, -10, -20],
+            [-10,   5,   0,   0,   0,   0,   5, -10],
+            [-10,  10,  10,  10,  10,  10,  10, -10],
+            [-10,   0,  10,  10,  10,  10,   0, -10],
+            [-10,   5,   5,  10,  10,   5,   5, -10],
+            [-10,   0,   5,  10,  10,   5,   0, -10],
+            [-10,   0,   0,   0,   0,   0,   0, -10],
+            [-20, -10, -10, -10, -10, -10, -10, -20]
+        ]
+        let rookTable = [
+            [ 0,  0,  0,  5,  5,  0,  0,  0],
+            [-5,  0,  0,  0,  0,  0,  0, -5],
+            [-5,  0,  0,  0,  0,  0,  0, -5],
+            [-5,  0,  0,  0,  0,  0,  0, -5],
+            [-5,  0,  0,  0,  0,  0,  0, -5],
+            [-5,  0,  0,  0,  0,  0,  0, -5],
+            [ 5, 10, 10, 10, 10, 10, 10,  5],
+            [ 0,  0,  0,  0,  0,  0,  0,  0]
+        ]
+        let queenTable = [
+            [-20, -10, -10, -5, -5, -10, -10, -20],
+            [-10,   0,   5,  0,  0,   0,   0, -10],
+            [-10,   5,   5,  5,  5,   5,   0, -10],
+            [  0,   0,   5,  5,  5,   5,   0,  -5],
+            [ -5,   0,   5,  5,  5,   5,   0,  -5],
+            [-10,   0,   5,  5,  5,   5,   0, -10],
+            [-10,   0,   0,  0,  0,   0,   0, -10],
+            [-20, -10, -10, -5, -5, -10, -10, -20]
+        ]
 
     init() { setupBoard() }
 
-    func setupBoard() {
+    func setupBoard() { 
         var newBoard: [[Square]] = []
         for r in 0..<8 {
             var rowSquares: [Square] = []
@@ -121,21 +175,56 @@ class ChessEngine: ObservableObject {
     }
 
     func handleTap(row: Int, col: Int) {
-        if isAITurn || promotionSquare != nil || gameState.isGameOver { return }
-        let tapped = board[row][col]
-        if let sel = selectedSquare {
-            if isPseudoLegal(p: sel.piece!, from: sel, to: tapped, on: board) {
-                var sim = board
-                sim[row][col].piece = sel.piece; sim[sel.row][sel.column].piece = nil
-                if !isKingInCheck(color: sel.piece!.color, on: sim) {
-                    executeMove(from: sel, to: tapped); return
+            if isAITurn || promotionSquare != nil || gameState.isGameOver { return }
+            let tapped = board[row][col]
+            
+            if let sel = selectedSquare {
+                // Đang có quân được chọn, thử đi đến ô tapped
+                if isPseudoLegal(p: sel.piece!, from: sel, to: tapped, on: board) {
+                    var sim = board
+                    sim[row][col].piece = sel.piece; sim[sel.row][sel.column].piece = nil
+                    if !isKingInCheck(color: sel.piece!.color, on: sim) {
+                        executeMove(from: sel, to: tapped)
+                        return
+                    }
+                }
+                // Đổi sang chọn quân khác của phe mình
+                if tapped.piece?.color == (isWhiteTurn ? .white : .black) {
+                    selectedSquare = tapped
+                    updateValidDestinations(for: tapped) // 🌟 TÍNH TOÁN ĐƯỜNG ĐI
+                } else {
+                    // Bấm ra ngoài hoặc bấm quân địch không hợp lệ -> Hủy chọn
+                    selectedSquare = nil
+                    validDestinations = [] // 🌟 XÓA ĐƯỜNG ĐI
+                }
+            } else if tapped.piece?.color == (isWhiteTurn ? .white : .black) {
+                // Bấm chọn quân cờ lần đầu
+                selectedSquare = tapped
+                updateValidDestinations(for: tapped) // 🌟 TÍNH TOÁN ĐƯỜNG ĐI
+            }
+        }
+    
+    // Tính toán và lưu lại các ô mà quân cờ đang chọn có thể đi tới
+        func updateValidDestinations(for sq: Square) {
+            validDestinations = []
+            guard let p = sq.piece else { return }
+            
+            for tr in 0..<8 {
+                for tc in 0..<8 {
+                    let toSq = board[tr][tc]
+                    // 1. Kiểm tra luật di chuyển cơ bản
+                    if isPseudoLegal(p: p, from: sq, to: toSq, on: board) {
+                        // 2. Kiểm tra xem đi xong Vua có bị chiếu không
+                        var sim = board
+                        sim[tr][tc].piece = p
+                        sim[sq.row][sq.column].piece = nil
+                        if !isKingInCheck(color: p.color, on: sim) {
+                            validDestinations.append((tr, tc))
+                        }
+                    }
                 }
             }
-            selectedSquare = (tapped.piece?.color == (isWhiteTurn ? .white : .black)) ? tapped : nil
-        } else if tapped.piece?.color == (isWhiteTurn ? .white : .black) {
-            selectedSquare = tapped
         }
-    }
 
     func executeMove(from: Square, to: Square) {
         let piece = from.piece!
@@ -159,10 +248,24 @@ class ChessEngine: ObservableObject {
             isWhiteTurn.toggle()
         }
         gameState = .playing; isAITurn = false; selectedSquare = nil
+        validDestinations = [] // Xóa các dấu chấm gợi ý sau khi đi xong hoặc lùi bước
     }
+    
+    // HÀM XỬ LÝ KHI NGƯỜI CHƠI CHỌN QUÂN PHONG CẤP
+        func promotePawn(to pieceType: PieceType) {
+            if let promo = promotionSquare {
+                // Thay Tốt bằng quân cờ mới chọn (giữ nguyên màu)
+                board[promo.row][promo.column].piece = ChessPiece(type: pieceType, color: promo.piece!.color)
+                
+                // Xóa trạng thái chờ phong cấp và tiếp tục ván đấu
+                promotionSquare = nil
+                finalizeTurn()
+            }
+        }
 
     func finalizeTurn() {
         isWhiteTurn.toggle(); selectedSquare = nil
+        validDestinations = [] // Xóa các dấu chấm gợi ý sau khi đi xong hoặc lùi bước
         let current = isWhiteTurn ? PieceColor.white : .black
         let inCheck = isKingInCheck(color: current, on: board)
         
@@ -180,36 +283,163 @@ class ChessEngine: ObservableObject {
         }
     }
 
-    func getAllLegalMoves(for color: PieceColor) -> [Any] {
-        var moves: [Any] = []
-        for r in 0..<8 { for c in 0..<8 {
-            if let p = board[r][c].piece, p.color == color {
-                for tr in 0..<8 { for tc in 0..<8 {
-                    if isPseudoLegal(p: p, from: board[r][c], to: board[tr][tc], on: board) {
-                        var sim = board; sim[tr][tc].piece = p; sim[r][c].piece = nil
-                        if !isKingInCheck(color: color, on: sim) { moves.append(0) }
+    // MARK: - HỆ THỐNG TRÍ TUỆ NHÂN TẠO (AI CORE)
+        
+        // 1. Đánh giá thế cờ (Tính điểm)
+        func evaluateBoard(on b: [[Square]]) -> Int {
+            var score = 0
+            for r in 0..<8 {
+                for c in 0..<8 {
+                    if let p = b[r][c].piece {
+                        var posScore = 0
+                        // Lật ngược bảng điểm cho quân Đen
+                        let tableRow = (p.color == .white) ? r : (7 - r)
+                        
+                        switch p.type {
+                        case .pawn: posScore = pawnTable[tableRow][c]
+                        case .knight: posScore = knightTable[tableRow][c]
+                        case .bishop: posScore = bishopTable[tableRow][c]
+                        case .rook: posScore = rookTable[tableRow][c]
+                        case .queen: posScore = queenTable[tableRow][c]
+                        case .king: posScore = 0 // Vua có thể thêm bảng an toàn sau
+                        }
+                        
+                        // Điểm = Giá trị quân + Vị trí đứng
+                        let pieceValue = p.value + posScore
+                        // AI cầm quân Đen -> Muốn điểm Đen là số Dương
+                        score += (p.color == .black) ? pieceValue : -pieceValue
                     }
-                }}
+                }
             }
-        }}
-        return moves
-    }
+            return score
+        }
 
-    func makeAIMove() {
-        var moves: [(Square, Square)] = []
-        for r in 0..<8 { for c in 0..<8 {
-            if let p = board[r][c].piece, p.color == .black {
-                for tr in 0..<8 { for tc in 0..<8 {
-                    if isPseudoLegal(p: p, from: board[r][c], to: board[tr][tc], on: board) {
-                        var sim = board; sim[tr][tc].piece = p; sim[r][c].piece = nil
-                        if !isKingInCheck(color: .black, on: sim) { moves.append((board[r][c], board[tr][tc])) }
-                    }
-                }}
+        // 2. Thuật toán Minimax + Alpha-Beta Pruning
+        func alphaBeta(depth: Int, alpha: Int, beta: Int, isMaximizing: Bool, tempBoard: [[Square]]) -> Int {
+            if depth == 0 {
+                return evaluateBoard(on: tempBoard)
             }
-        }}
-        if let m = moves.randomElement() { executeMove(from: m.0, to: m.1) }
-        isAITurn = false
-    }
+            
+            var currAlpha = alpha
+            var currBeta = beta
+            let color: PieceColor = isMaximizing ? .black : .white
+            let moves = getAllLegalMoves(for: color, on: tempBoard)
+            
+            // Kiểm tra chiếu bí
+            if moves.isEmpty {
+                if isKingInCheck(color: color, on: tempBoard) {
+                    return isMaximizing ? -999999 : 999999 // Thua
+                }
+                return 0 // Hòa
+            }
+            
+            if isMaximizing {
+                var maxEval = -1000000
+                for move in moves {
+                    var simBoard = tempBoard
+                    simBoard[move.1.row][move.1.column].piece = simBoard[move.0.row][move.0.column].piece
+                    simBoard[move.0.row][move.0.column].piece = nil // Giả lập đi cờ
+                    
+                    let eval = alphaBeta(depth: depth - 1, alpha: currAlpha, beta: currBeta, isMaximizing: false, tempBoard: simBoard)
+                    maxEval = max(maxEval, eval)
+                    currAlpha = max(currAlpha, eval)
+                    if currBeta <= currAlpha { break } // Cắt nhánh vô ích
+                }
+                return maxEval
+            } else {
+                var minEval = 1000000
+                for move in moves {
+                    var simBoard = tempBoard
+                    simBoard[move.1.row][move.1.column].piece = simBoard[move.0.row][move.0.column].piece
+                    simBoard[move.0.row][move.0.column].piece = nil // Giả lập đi cờ
+                    
+                    let eval = alphaBeta(depth: depth - 1, alpha: currAlpha, beta: currBeta, isMaximizing: true, tempBoard: simBoard)
+                    minEval = min(minEval, eval)
+                    currBeta = min(currBeta, eval)
+                    if currBeta <= currAlpha { break } // Cắt nhánh vô ích
+                }
+                return minEval
+            }
+        }
+
+        // 3. Hàm lấy nước đi hợp lệ trên MỘT BÀN CỜ BẤT KỲ
+        func getAllLegalMoves(for color: PieceColor, on b: [[Square]]? = nil) -> [(Square, Square)] {
+            let targetBoard = b ?? self.board // Dùng bàn cờ ảo hoặc bàn cờ thật
+            var moves: [(Square, Square)] = []
+            
+            for r in 0..<8 {
+                for c in 0..<8 {
+                    if let p = targetBoard[r][c].piece, p.color == color {
+                        let fromSq = targetBoard[r][c]
+                        for tr in 0..<8 {
+                            for tc in 0..<8 {
+                                let toSq = targetBoard[tr][tc]
+                                if isPseudoLegal(p: p, from: fromSq, to: toSq, on: targetBoard) {
+                                    var sim = targetBoard
+                                    sim[tr][tc].piece = p
+                                    sim[r][c].piece = nil
+                                    if !isKingInCheck(color: color, on: sim) {
+                                        moves.append((fromSq, toSq))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return moves
+        }
+
+        // 4. Ra lệnh cho máy đi
+        func makeAIMove() {
+            // 1. Chụp lại bàn cờ hiện tại
+            let currentBoard = self.board
+            
+            // 2. Thực hiện so sánh ĐỘ KHÓ ngay trên luồng chính và lưu thành biến Bool an toàn
+            let isEasyMode = (self.aiDifficulty == .easy)
+            let isHardMode = (self.aiDifficulty == .hard)
+            
+            // 3. Chạy tính toán nặng trên luồng nền
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                
+                let moves = self.getAllLegalMoves(for: .black, on: currentBoard)
+                if moves.isEmpty { return }
+                
+                var bestMove = moves[0]
+                
+                // 4. Sử dụng trực tiếp biến Bool thay vì so sánh enum ở đây
+                if isEasyMode {
+                    // Dễ: Đi ngẫu nhiên nhưng ưu tiên ăn quân
+                    let captures = moves.filter { currentBoard[$0.1.row][$0.1.column].piece != nil }
+                    bestMove = captures.randomElement() ?? moves.randomElement()!
+                } else {
+                    // Trung Bình (Độ sâu 2) - Khó (Độ sâu 3)
+                    let searchDepth = isHardMode ? 3 : 2
+                    var bestValue = -1000000
+                    
+                    for move in moves {
+                        var simBoard = currentBoard
+                        simBoard[move.1.row][move.1.column].piece = simBoard[move.0.row][move.0.column].piece
+                        simBoard[move.0.row][move.0.column].piece = nil
+                        
+                        // Quét Alpha Beta
+                        let boardValue = self.alphaBeta(depth: searchDepth - 1, alpha: -1000000, beta: 1000000, isMaximizing: false, tempBoard: simBoard)
+                        
+                        if boardValue > bestValue {
+                            bestValue = boardValue
+                            bestMove = move
+                        }
+                    }
+                }
+                
+                // 5. Trở về luồng chính cập nhật giao diện
+                DispatchQueue.main.async {
+                    self.executeMove(from: bestMove.0, to: bestMove.1)
+                    self.isAITurn = false
+                }
+            }
+        }
 }
 
 // MARK: - EXTENSIONS
@@ -229,6 +459,9 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
+            
+            
+            
             Color(red: 0.1, green: 0.1, blue: 0.12).edgesIgnoringSafeArea(.all)
             
             if mode == .menu {
@@ -274,6 +507,21 @@ struct ContentView: View {
                                                 ZStack {
                                                     Rectangle().fill((r+c)%2==0 ? Color(red: 0.93, green: 0.93, blue: 0.82) : Color(red: 0.46, green: 0.59, blue: 0.34)).frame(width: cellSize, height: cellSize)
                                                     if game.selectedSquare?.row == r && game.selectedSquare?.column == c { Color.yellow.opacity(0.4).frame(width: cellSize, height: cellSize) }
+                                                    // --- BẮT ĐẦU ĐOẠN THÊM MỚI ---
+                                                    if game.validDestinations.contains(where: { $0.0 == r && $0.1 == c }) {
+                                                        if game.board[r][c].piece != nil {
+                                                            // Ô có quân địch -> Vẽ vòng khuyên bao quanh
+                                                            Circle()
+                                                                .strokeBorder(Color.black.opacity(0.3), lineWidth: cellSize * 0.08)
+                                                                .frame(width: cellSize * 0.8, height: cellSize * 0.8)
+                                                        } else {
+                                                            // Ô trống -> Vẽ dấu chấm mờ ở giữa
+                                                            Circle()
+                                                                .fill(Color.black.opacity(0.25))
+                                                                .frame(width: cellSize * 0.3, height: cellSize * 0.3)
+                                                        }
+                                                    }
+                                                    // --- KẾT THÚC ĐOẠN THÊM MỚI ---
                                                     if let p = game.board[r][c].piece { Text(p.symbol).font(.system(size: cellSize * 0.7)).foregroundColor(.black) }
                                                 }.onTapGesture { game.handleTap(row: r, col: c) }
                                             }
@@ -294,16 +542,28 @@ struct ContentView: View {
                             }.frame(width: boardSize + 30).padding(.top, 20)
                         }
                         
+                        // NHẬT KÝ BÊN PHẢI (Ẩn nếu màn hình quá hẹp)
                         if geo.size.width > 800 {
                             VStack(alignment: .leading) {
-                                Text("NHẬT KÝ").font(.headline).foregroundColor(.white)
+                                Text("NHẬT KÝ")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                
                                 ScrollView {
                                     VStack(spacing: 5) {
-                                        ForEach(game.moveLog, id: \.self) { log in
-                                            Text(log).font(.system(.body, design: .monospaced)).padding(6).frame(maxWidth: .infinity, alignment: .leading).background(Color.white.opacity(0.1)).cornerRadius(5).foregroundColor(.white)
+                                        // 🌟 Duyệt ngược mảng history và dùng id của nó
+                                        ForEach(game.history.reversed()) { move in
+                                            Text(move.notation)
+                                                .font(.system(.body, design: .monospaced))
+                                                .padding(6)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .background(Color.white.opacity(0.1))
+                                                .cornerRadius(5)
+                                                .foregroundColor(.white)
                                         }
                                     }
-                                }.frame(width: 150, height: boardSize)
+                                }
+                                .frame(width: 150, height: boardSize)
                             }
                         }
                         Spacer()
@@ -311,17 +571,46 @@ struct ContentView: View {
                 }
             }
             
-            // POPUP KẾT THÚC
-            if game.gameState.isGameOver {
-                Color.black.opacity(0.8).edgesIgnoringSafeArea(.all)
-                VStack(spacing: 20) {
-                    Text(game.gameState == .stalemate ? "HÒA CỜ!" : "CHIẾU BÍ!").font(.system(size: 40, weight: .black)).foregroundColor(.white)
-                    Text(game.gameState == .checkmateWhiteWins ? "TRẮNG THẮNG" : (game.gameState == .checkmateBlackWins ? "ĐEN THẮNG" : "Không bên nào thắng")).foregroundColor(.gray)
-                    Button("Chơi ván mới") { game.setupBoard() }.buttonStyle(.borderedProminent)
-                    Button("Quay lại Menu") { mode = .menu; game.setupBoard() }.foregroundColor(.blue)
-                }.padding(40).background(Color.white).cornerRadius(20)
-            }
-        }
+            // ... (Đoạn POPUP KẾT THÚC CŨ) ...
+                        if game.gameState.isGameOver {
+                            Color.black.opacity(0.8).edgesIgnoringSafeArea(.all)
+                            VStack(spacing: 20) {
+                                Text(game.gameState == .stalemate ? "HÒA CỜ!" : "CHIẾU BÍ!").font(.system(size: 40, weight: .black)).foregroundColor(.white)
+                                Text(game.gameState == .checkmateWhiteWins ? "TRẮNG THẮNG" : (game.gameState == .checkmateBlackWins ? "ĐEN THẮNG" : "Không bên nào thắng")).foregroundColor(.gray)
+                                Button("Chơi ván mới") { game.setupBoard() }.buttonStyle(.borderedProminent)
+                                Button("Quay lại Menu") { mode = .menu; game.setupBoard() }.foregroundColor(.blue)
+                            }.padding(40).background(Color.white).cornerRadius(20)
+                        }
+                        
+                        // 🌟 THÊM MỚI: POPUP PHONG CẤP TỐT 🌟
+                        if let promoSquare = game.promotionSquare {
+                            Color.black.opacity(0.8).edgesIgnoringSafeArea(.all)
+                            VStack(spacing: 20) {
+                                Text("PHONG CẤP TỐT!").font(.largeTitle).bold().foregroundColor(.white)
+                                
+                                HStack(spacing: 20) {
+                                    // Lặp qua 4 lựa chọn để tạo nút bấm
+                                    ForEach([PieceType.queen, .rook, .bishop, .knight], id: \.self) { type in
+                                        Button(action: {
+                                            game.promotePawn(to: type)
+                                        }) {
+                                            Text(ChessPiece(type: type, color: promoSquare.piece!.color).symbol)
+                                                .font(.system(size: 60))
+                                                .foregroundColor(.black)
+                                                .frame(width: 90, height: 90)
+                                                .background(Color.white)
+                                                .cornerRadius(15)
+                                                .shadow(radius: 5)
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                    }
+                                }
+                            }
+                            .padding(40)
+                            .background(Color.gray)
+                            .cornerRadius(25)
+                            .shadow(radius: 20)
+                        }        }
     }
     
     func startAI(_ d: Difficulty) {
